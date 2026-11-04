@@ -1,18 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""诊断2：dump OKX 上架的股票/ETF 永续合约清单，确定区分字段。"""
+"""诊断3：对比 OKX 股票永续 vs 加密币永续的字段差异。"""
 import json
 from urllib import request
 from urllib.error import HTTPError, URLError
 
 UA = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-
-# 常见加密币（用于排除，剩下的就是股票/ETF/指数）
-CRYPTO = {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK",
-          "LTC", "BCH", "NEAR", "APT", "ARB", "OP", "SUI", "PEPE", "SHIB", "UNI",
-          "AAVE", "ATOM", "ETC", "FIL", "ICP", "TRX", "XLM", "EOS", "TIA", "SEI",
-          "INJ", "WIF", "ORDI", "1000PEPE", "1000SHIB", "1000BONK"}
-
 URL = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
 
 
@@ -26,27 +19,17 @@ def main():
         return
 
     insts = data.get("data", [])
-    print("OKX SWAP 合约总数:", len(insts))
-    # 看一个样例的完整字段
-    if insts:
-        print("\n样例字段（加密币 BTC）:")
-        print(json.dumps(insts[0], ensure_ascii=False, indent=2)[:800])
-
-    # 找出股票/ETF 类（baseCcy 不在加密币集合里，且 quoteCcy=USDT）
-    equities = []
-    for s in insts:
-        base = s.get("ctValCcy") or s.get("baseCcy") or ""
-        inst_id = s.get("instId", "")
-        # instId 形如 TSLA-USDT-SWAP
-        parts = inst_id.split("-")
-        base2 = parts[0] if parts else ""
-        quote = parts[1] if len(parts) > 1 else ""
-        if quote == "USDT" and base2 not in CRYPTO:
-            equities.append((base2, inst_id, s.get("ctType"), s.get("settleCcy")))
-
-    print("\n非加密币的 USDT 永续合约（股票/ETF/指数候选）共 %d 个:" % len(equities))
-    for b, iid, ct, sc in equities:
-        print("  %-12s %-28s ctType=%s settle=%s" % (b, iid, ct, sc))
+    targets = ["AAPL-USDT-SWAP", "QQQ-USDT-SWAP", "TSLA-USDT-SWAP", "BTC-USDT-SWAP", "BTC-USD-SWAP"]
+    for t in targets:
+        hit = next((s for s in insts if s.get("instId") == t), None)
+        if not hit:
+            print("\n[%s] 未找到" % t)
+            continue
+        print("\n[%s] 关键字段:" % t)
+        for k in ["instType", "instId", "uly", "instFamily", "baseCcy", "quoteCcy",
+                  "settleCcy", "ctValCcy", "ctType", "instCategory", "category", "groupId",
+                  "state", "lever"]:
+            print("   %-14s = %s" % (k, hit.get(k)))
 
 
 if __name__ == "__main__":
