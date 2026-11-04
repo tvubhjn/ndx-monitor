@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-币安股票/ETF 永续合约监控器（TradFi Perps）
+美股股票/ETF 永续合约监控器（OKX 数据源）
 
-监控币安上架的所有股票/ETF 永续合约（TSLAUSDT、NVDAUSDT、QQQUSDT 等），
-覆盖美股盘前 / 盘中 / 盘后，按「24h 涨跌幅」和「24h 振幅」超阈值发邮件告警。
+背景：币安合约 API（fapi.binance.com）会屏蔽美国 IP（HTTP 451），而 GitHub Actions
+服务器在美国，无法访问币安。OKX 的股票/ETF 永续合约与币安高度重叠（都是美股大盘股
++ 热门 ETF），且 OKX 公开行情接口从美国可正常访问、无需任何 key。
 
 特性：
-- 标的动态获取：从币安 exchangeInfo 自动筛出 underlyingType=EQUITY 的合约，
-  币安上新自动覆盖，无需手动维护名单
-- 数据源：币安 fapi 公开行情接口，无需任何 API key
-- 一次调用拿全量行情：ticker/24hr 接口返回所有合约，无需逐个查询
-- 分层阈值：宽基 ETF/指数 ±0.4%，个股 ±3%，24h 振幅 ≥5%
+- 标的动态获取：从 OKX instruments 接口筛出 instCategory=3（股票/ETF）的永续合约
+- 数据源：OKX 公开行情接口，免费、无需 key、一次调用拿全量
+- 分层阈值：宽基 ETF（QQQ/SPY）±1.3%，个股 ±3%，24h 振幅 ≥5%
 - 时段频率：盘前每 5 分钟 / 盘后每 10 分钟 / 盘中每 15 分钟 / 休市不跑
 - 冷却：同一标的 60 分钟内不重复告警
 - 零第三方依赖：仅用 Python 标准库，GitHub Actions 可直接跑
 
 用法：
-  python monitor.py            正常监控（判断时段 -> 取价 -> 判阈值 -> 告警）
-  python monitor.py --check    忽略时段/频率，强制取价打印诊断（本地自测）
-  python monitor.py --test     取价 + 发一封测试邮件（验证邮箱链路）
+  python monitor.py            正常监控
+  python monitor.py --check    忽略时段/频率，强制取价打印诊断
+  python monitor.py --test     取价 + 发一封测试邮件
 
-配置：config.json（阈值、频率、宽基ETF列表、收件人）
+配置：config.json（阈值、宽基ETF列表、收件人）
 密钥：环境变量 SMTP_USER / SMTP_PASSWORD（QQ 邮箱授权码）
 """
 
@@ -47,13 +46,12 @@ LAST_RUN_PATH = os.path.join(STATE_DIR, "last_run.json")
 ET_TZ = ZoneInfo("America/New_York")
 BJ_TZ = ZoneInfo("Asia/Shanghai")
 
-API_EXCHANGE_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-API_TICKER_24H = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+# OKX 公开行情接口
+API_INSTRUMENTS = "https://www.okx.com/api/v5/public/instruments"
+API_TICKERS = "https://www.okx.com/api/v5/market/tickers"
 
-# 股票/ETF 合约的 underlyingType 保留值（EQUITY=股票/ETF，INDEX 为可能的指数值）
-EQUITY_TYPES = {"EQUITY", "ETF", "INDEX", "STOCK"}
-# 明确排除的标的类型
-EXCLUDE_TYPES = {"CRYPTO", "COMMODITY"}
+# OKX instCategory：3 = 股票/ETF 永续（1 = 加密币）
+EQUITY_INST_CATEGORY = "3"
 
 
 # --------------------------------------------------------------------------
@@ -61,7 +59,7 @@ EXCLUDE_TYPES = {"CRYPTO", "COMMODITY"}
 # --------------------------------------------------------------------------
 
 def http_get_json(url, timeout=20):
-    req = request.Request(url, headers={"User-Agent": "ndx-monitor", "Accept": "application/json"})
+    req = request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
     with request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -103,29 +101,18 @@ def fnum(v):
 # --------------------------------------------------------------------------
 
 def market_session(now_et):
-    """返回 'premarket' / 'regular' / 'afterhours' / 'closed'"""
     t = now_et.hour * 60 + now_et.minute
-    if 4 * 60 <= t < 9 * 60 + 30:      # 盘前 4:00 - 9:30
+    if 4 * 60 <= t < 9 * 60 + 30:
         return "premarket"
-    if 9 * 60 + 30 <= t < 16 * 60:     # 盘中 9:30 - 16:00
+    if 9 * 60 + 30 <= t < 16 * 60:
         return "regular"
-    if 16 * 60 <= t < 20 * 60:         # 盘后 16:00 - 20:00
+    if 16 * 60 <= t < 20 * 60:
         return "afterhours"
     return "closed"
 
 
-SESSION_LABEL = {
-    "premarket": "盘前",
-    "regular": "盘中",
-    "afterhours": "盘后",
-    "closed": "休市",
-}
-
-SESSION_INTERVAL = {
-    "premarket": 5,
-    "afterhours": 10,
-    "regular": 15,
-}
+SESSION_LABEL = {"premarket": "盘前", "regular": "盘中", "afterhours": "盘后", "closed": "休市"}
+SESSION_INTERVAL = {"premarket": 5, "afterhours": 10, "regular": 15}
 
 
 def should_run(session, force=False):
@@ -137,90 +124,68 @@ def should_run(session, force=False):
     last = load_json(LAST_RUN_PATH, 0)
     if isinstance(last, dict):
         last = last.get("t", 0)
-    return (time.time() - last) >= interval * 60 - 30  # 留 30 秒余量
+    return (time.time() - last) >= interval * 60 - 30
 
 
 # --------------------------------------------------------------------------
-# 获取币安股票/ETF 永续合约
+# 获取 OKX 股票/ETF 永续合约
 # --------------------------------------------------------------------------
 
 def get_equity_symbols():
-    """从 exchangeInfo 筛出股票/ETF 永续合约的 symbol 集合。"""
-    data = http_get_json(API_EXCHANGE_INFO)
-    symbols = set()
-    for s in data.get("symbols", []):
-        if s.get("quoteAsset") != "USDT":
-            continue
-        if s.get("contractType") != "PERPETUAL":
-            continue
-        if s.get("status") != "TRADING":
-            continue
-        utype = s.get("underlyingType", "")
-        if utype in EQUITY_TYPES:
-            symbols.add(s["symbol"])
-        elif utype in EXCLUDE_TYPES or utype == "":
-            continue
-        else:
-            # 未知类型：兜底，按"非加密币 symbol"处理不了的场景跳过，保持只监控明确 EQUITY
-            continue
-    return symbols
+    """从 OKX instruments 筛出股票/ETF 永续（instCategory=3）的 instId 列表。"""
+    data = http_get_json(API_INSTRUMENTS + "?instType=SWAP")
+    result = []
+    for s in data.get("data", []):
+        if s.get("instCategory") == EQUITY_INST_CATEGORY and s.get("state") == "live":
+            result.append(s["instId"])
+    return result
 
-
-# --------------------------------------------------------------------------
-# 获取行情（一次调用拿全量 24h 数据）
-# --------------------------------------------------------------------------
 
 def fetch_tickers():
-    """返回 {symbol: ticker_dict}，ticker 含 lastPrice/priceChangePercent/high/low/prevClose。"""
-    arr = http_get_json(API_TICKER_24H)
-    return {t["symbol"]: t for t in arr if isinstance(t, dict) and t.get("symbol")}
+    """一次调用返回所有 SWAP 合约的 ticker，{instId: ticker_dict}。"""
+    arr = http_get_json(API_TICKERS + "?instType=SWAP").get("data", [])
+    return {t["instId"]: t for t in arr if isinstance(t, dict) and t.get("instId")}
 
 
 # --------------------------------------------------------------------------
 # 告警判定
 # --------------------------------------------------------------------------
 
-def evaluate(symbol, tk, is_index, thr):
-    """返回事件 dict 或 None。"""
-    last = fnum(tk.get("lastPrice"))
-    pcp = fnum(tk.get("priceChangePercent"))
-    high = fnum(tk.get("highPrice"))
-    low = fnum(tk.get("lowPrice"))
-    prev = fnum(tk.get("prevClosePrice"))
+def evaluate(inst_id, base, tk, is_index, thr):
+    last = fnum(tk.get("last"))
+    open24h = fnum(tk.get("open24h"))
+    high = fnum(tk.get("high24h"))
+    low = fnum(tk.get("low24h"))
 
-    if last is None:
+    if last is None or open24h is None or open24h <= 0:
         return None
-    if pcp is None and prev and prev > 0:
-        pcp = (last - prev) / prev * 100
+
+    change_pct = (last - open24h) / open24h * 100
+    amplitude = (high - low) / open24h * 100 if high is not None and low is not None else None
 
     threshold = thr["index_change_pct"] if is_index else thr["stock_change_pct"]
 
     direction = None
-    if pcp is not None:
-        if pcp >= threshold:
-            direction = "up"
-        elif pcp <= -threshold:
-            direction = "down"
+    if change_pct >= threshold:
+        direction = "up"
+    elif change_pct <= -threshold:
+        direction = "down"
 
-    amplitude = None
-    if high is not None and low is not None and prev and prev > 0:
-        amplitude = (high - low) / prev * 100
     amp_hit = amplitude is not None and amplitude >= thr["amplitude_pct"]
 
     if not direction and not amp_hit:
         return None
 
-    ev = {
-        "symbol": symbol,
+    return {
+        "symbol": base,
+        "inst_id": inst_id,
         "price": last,
-        "change_pct": pcp if pcp is not None else 0.0,
+        "change_pct": change_pct,
         "amplitude_pct": amplitude,
         "is_index": is_index,
         "amp_hit": amp_hit,
+        "direction": direction,
     }
-    if direction:
-        ev["direction"] = direction
-    return ev
 
 
 # --------------------------------------------------------------------------
@@ -229,7 +194,7 @@ def evaluate(symbol, tk, is_index, thr):
 
 def build_body(events, session, now_bj):
     lines = [
-        "币安股票/ETF 永续监控告警",
+        "股票/ETF 永续监控告警（OKX）",
         "=" * 28,
         "",
         "时段：%s（北京时间 %s）" % (SESSION_LABEL.get(session, session), now_bj.strftime("%Y-%m-%d %H:%M:%S")),
@@ -242,14 +207,15 @@ def build_body(events, session, now_bj):
             arrow = "↓ 下跌"
         else:
             arrow = "↕ 大幅震荡"
-        lines.append("%s %s" % (ev["symbol"], arrow))
+        tag = "指数/ETF" if ev["is_index"] else "个股"
+        lines.append("%s %s %s" % (ev["symbol"], arrow, tag))
         lines.append("  现价：%.4g" % ev["price"])
         lines.append("  24h涨跌幅：%+.2f%%" % ev["change_pct"])
         if ev["amplitude_pct"] is not None:
             lines.append("  24h振幅：%.2f%%" % ev["amplitude_pct"])
         lines.append("-" * 28)
     lines.append("")
-    lines.append("数据源：币安合约（TradFi 永续，24/7）。本邮件由 GitHub Actions 自动发送，请勿直接回复。")
+    lines.append("数据源：OKX 股票/ETF 永续（24/7）。本邮件由 GitHub Actions 自动发送，请勿直接回复。")
     return "\n".join(lines)
 
 
@@ -317,7 +283,7 @@ def run_monitor(force=False):
         return
 
     if not equity_symbols:
-        print("[提示] 未获取到股票/ETF 合约，请检查网络或币安接口。")
+        print("[提示] 未获取到股票/ETF 合约。")
         return
 
     alerts = load_json(ALERTS_PATH, {})
@@ -326,29 +292,28 @@ def run_monitor(force=False):
 
     events = []
     checked = 0
-    for symbol in sorted(equity_symbols):
-        tk = tickers.get(symbol)
+    for inst_id in sorted(equity_symbols):
+        tk = tickers.get(inst_id)
         if not tk:
             continue
         checked += 1
-        # 去 USDT 后缀取股票代码，判断是否宽基 ETF/指数
-        base = symbol[:-4] if symbol.endswith("USDT") else symbol
+        base = inst_id.split("-")[0]
         is_index = base in index_set
-        ev = evaluate(symbol, tk, is_index, thr)
+        ev = evaluate(inst_id, base, tk, is_index, thr)
         if not ev:
             continue
 
-        last = alerts.get(symbol, {})
-        if (now - last.get("t", 0)) < cooldown * 60:
-            print("[%s] 触发但处于冷却期，已抑制" % symbol)
+        last_alert = alerts.get(inst_id, {})
+        if (now - last_alert.get("t", 0)) < cooldown * 60:
+            print("[%s] 触发但处于冷却期，已抑制" % base)
             continue
 
         events.append(ev)
-        alerts[symbol] = {"t": int(now), "dir": ev.get("direction", "amp"), "p": ev["price"]}
+        alerts[inst_id] = {"t": int(now), "dir": ev.get("direction", "amp"), "p": ev["price"]}
         if ev.get("direction"):
-            print("[%s] %s %+.2f%% 触发告警" % (symbol, "指数" if is_index else "个股", ev["change_pct"]))
+            print("[%s] %s %+.2f%% 触发告警" % (base, "指数/ETF" if is_index else "个股", ev["change_pct"]))
         if ev.get("amp_hit"):
-            print("[%s] 24h振幅 %.2f%% 触发告警" % (symbol, ev["amplitude_pct"]))
+            print("[%s] 24h振幅 %.2f%% 触发告警" % (base, ev["amplitude_pct"]))
 
     save_json(ALERTS_PATH, alerts)
 
@@ -357,7 +322,7 @@ def run_monitor(force=False):
              SESSION_LABEL[session], checked))
 
     if events:
-        subject = "【币安股票合约告警】%d 个标的触发波动阈值（%s）" % (len(events), SESSION_LABEL[session])
+        subject = "【股票合约告警】%d 个标的触发波动阈值（%s）" % (len(events), SESSION_LABEL[session])
         send_email(cfg, subject, build_body(events, session, now_bj))
     else:
         print("本轮无标的触发阈值。")
@@ -376,30 +341,32 @@ def run_check():
         print("[错误] 获取行情失败：%s" % str(e)[:120])
         return
 
-    print("== 自检：币安股票/ETF 永续合约 %d 个（时段=%s）==" % (len(equity_symbols), SESSION_LABEL[session]))
+    print("== 自检：OKX 股票/ETF 永续合约 %d 个（时段=%s）==" % (len(equity_symbols), SESSION_LABEL[session]))
     rows = []
-    for symbol in sorted(equity_symbols):
-        tk = tickers.get(symbol)
+    for inst_id in equity_symbols:
+        tk = tickers.get(inst_id)
         if not tk:
             continue
-        base = symbol[:-4] if symbol.endswith("USDT") else symbol
+        base = inst_id.split("-")[0]
         rows.append((base, tk))
-    # 按 24h 涨跌幅绝对值降序，打印最活跃的前 30 个
     def key_of(r):
-        pcp = fnum(r[1].get("priceChangePercent"))
-        return abs(pcp) if pcp is not None else 0
+        last = fnum(r[1].get("last"))
+        open24h = fnum(r[1].get("open24h"))
+        if last and open24h:
+            return abs((last - open24h) / open24h * 100)
+        return 0
     rows.sort(key=key_of, reverse=True)
-    for base, tk in rows[:30]:
-        pcp = fnum(tk.get("priceChangePercent"))
-        last = fnum(tk.get("lastPrice"))
-        high = fnum(tk.get("highPrice"))
-        low = fnum(tk.get("lowPrice"))
-        prev = fnum(tk.get("prevClosePrice"))
-        amp = (high - low) / prev * 100 if high and low and prev else None
-        tag = "指数" if base in index_set else "个股"
-        print("[%s] %s 现价=%.4g 24h涨跌=%+.2f%% 振幅=%s" % (
+    for base, tk in rows[:40]:
+        last = fnum(tk.get("last"))
+        open24h = fnum(tk.get("open24h"))
+        high = fnum(tk.get("high24h"))
+        low = fnum(tk.get("low24h"))
+        change = (last - open24h) / open24h * 100 if last and open24h else None
+        amp = (high - low) / open24h * 100 if high and low and open24h else None
+        tag = "指数/ETF" if base in index_set else "个股"
+        print("[%s] %s 现价=%.4g 24h涨跌=%s 振幅=%s" % (
             base, tag, last if last else 0,
-            pcp if pcp is not None else 0,
+            "%+.2f%%" % change if change is not None else "-",
             "%.2f%%" % amp if amp is not None else "-"))
     print("== 共 %d 个标的 ==" % len(rows))
 
@@ -416,21 +383,23 @@ def run_test():
         print("[错误] 获取行情失败：%s" % str(e)[:120])
         return
 
-    lines = ["币安股票合约监控测试邮件", "=" * 28, "", "时段：%s" % SESSION_LABEL[session]]
-    for symbol in sorted(equity_symbols)[:8]:
-        tk = tickers.get(symbol)
+    lines = ["股票/ETF 永续监控测试邮件（OKX）", "=" * 28, "", "时段：%s" % SESSION_LABEL[session]]
+    for inst_id in sorted(equity_symbols)[:8]:
+        tk = tickers.get(inst_id)
         if not tk:
             continue
-        pcp = fnum(tk.get("priceChangePercent"))
-        last = fnum(tk.get("lastPrice"))
-        lines.append("%s 现价=%.4g 24h涨跌=%+.2f%%" % (
-            symbol, last if last else 0, pcp if pcp is not None else 0))
+        last = fnum(tk.get("last"))
+        open24h = fnum(tk.get("open24h"))
+        change = (last - open24h) / open24h * 100 if last and open24h else None
+        lines.append("%s 现价=%.4g 24h涨跌=%s" % (
+            inst_id.split("-")[0], last if last else 0,
+            "%+.2f%%" % change if change is not None else "-"))
     lines.append("-" * 28)
     lines.append("收到此邮件 = 取价 + 发信链路已打通。")
     lines.append("时间：%s" % now_bj.strftime("%Y-%m-%d %H:%M:%S"))
     body = "\n".join(lines)
     print(body)
-    sent = send_email(cfg, "【币安股票合约监控】链路测试", body)
+    sent = send_email(cfg, "【股票合约监控】链路测试", body)
     print("[测试] 邮件发送：%s" % ("成功" if sent else "未发送（缺 SMTP 配置）"))
 
 

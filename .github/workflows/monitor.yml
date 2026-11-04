@@ -5,7 +5,17 @@ on:
     # UTC 0-1点、8-23点每5分钟触发，周一到周五。
     # 覆盖美股盘前/盘中/盘后（冬夏令时通用），具体时段和频率由脚本内部精确判断+节流。
     - cron: '*/5 0-1,8-23 * * 1-5'
-  workflow_dispatch: {}   # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '运行模式（自检=check，测试邮件=test，留空=正常监控）'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - check
+          - test
 
 permissions:
   contents: write
@@ -26,4 +36,4 @@ jobs:
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-        run: python monitor.py
+        run: python monitor.py ${{ inputs.mode == 'check' && '--check' || inputs.mode == 'test' && '--test' || '' }}
