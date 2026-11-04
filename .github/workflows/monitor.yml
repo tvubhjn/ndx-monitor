@@ -1,0 +1,29 @@
+name: ndx-monitor
+
+on:
+  schedule:
+    # UTC 0-1点、8-23点每5分钟触发，周一到周五。
+    # 覆盖美股盘前/盘中/盘后（冬夏令时通用），具体时段和频率由脚本内部精确判断+节流。
+    - cron: '*/5 0-1,8-23 * * 1-5'
+  workflow_dispatch: {}   # 支持手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run monitor
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python monitor.py

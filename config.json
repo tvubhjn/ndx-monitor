@@ -1,0 +1,20 @@
+{
+  "thresholds": {
+    "index_change_pct": 1.3,
+    "stock_change_pct": 3.0,
+    "amplitude_pct": 5.0
+  },
+  "cooldown_minutes": 60,
+  "index_symbols": [
+    "QQQ",
+    "SPY"
+  ],
+  "email": {
+    "to": ["2494994336@qq.com"]
+  },
+  "smtp": {
+    "host": "smtp.qq.com",
+    "port": 465,
+    "user": ""
+  }
+}
