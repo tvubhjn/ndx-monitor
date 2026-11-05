@@ -1,7 +1,7 @@
 {
   "thresholds": {
     "index_change_pct": 0.4,
-    "stock_change_pct": 3.0,
+    "stock_change_pct": 4.0,
     "amplitude_pct": 5.0
   },
   "cooldown_minutes": 60,

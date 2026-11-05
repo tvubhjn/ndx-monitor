@@ -439,6 +439,7 @@ def run_check():
 
 def run_test():
     cfg = load_config()
+    thr = cfg.get("thresholds", {})
     now_et = datetime.now(ET_TZ)
     now_bj = datetime.now(BJ_TZ)
     session = market_session(now_et)
@@ -450,28 +451,47 @@ def run_test():
         return
 
     watch = build_watchlist(cfg, live_bases)
+    hits = []
+    for base, is_index in watch:
+        tk = tickers.get(base)
+        if not tk:
+            continue
+        ev = evaluate(base, tk, is_index, thr)
+        if ev:
+            hits.append(ev)
+
     lines = ["NDX-100 股票监控测试邮件（Gate 永续）", "=" * 28, "",
              "时段：%s" % SESSION_LABEL[session],
              "监控标的：%d 个（Gate 在交易且属于 NDX100/宽基ETF）" % len(watch),
-             "按 24h 涨跌幅（绝对值）从高到低排序",
              ""]
-    rows = []
-    for base, is_index in watch:
-        tk = tickers.get(base)
-        if tk:
-            rows.append((base, is_index, tk))
-    rows.sort(key=lambda r: abs(fnum(r[2].get("change_percentage")) or 0), reverse=True)
-    shown = 0
-    for base, is_index, tk in rows:
-        last = fnum(tk.get("last"))
-        chg = fnum(tk.get("change_percentage"))
-        lines.append("%s %s 现价=%s 24h涨跌=%s" % (
-            base, "指数/ETF" if is_index else "个股", ("%.4g" % last) if last else "-",
-            ("%+.2f%%" % chg) if chg is not None else "-"))
-        shown += 1
-        if shown >= 15:
-            lines.append("...（共 %d 个标的，此处只列前 15 个）" % len(watch))
-            break
+
+    if hits:
+        hits.sort(key=lambda e: abs(e.get("change_pct") or 0), reverse=True)
+        lines.append("以下 %d 个标的当前涨跌超阈值（按涨跌幅绝对值从高到低）：" % len(hits))
+        lines.append("")
+        for ev in hits:
+            d = ev.get("direction")
+            arrow = "↑" if d == "up" else ("↓" if d == "down" else "↕")
+            tag = "指数/ETF" if ev["is_index"] else "个股"
+            lines.append("%s %s %s 现价=%.4g 24h涨跌=%+.2f%% 振幅=%s" % (
+                ev["symbol"], arrow, tag, ev["price"], ev["change_pct"],
+                ("%.2f%%" % ev["amplitude_pct"]) if ev["amplitude_pct"] is not None else "-"))
+    else:
+        lines.append("当前无标的涨跌超阈值。以下为波动最大的前 15 个样本：")
+        lines.append("")
+        rows = []
+        for base, is_index in watch:
+            tk = tickers.get(base)
+            if tk:
+                rows.append((base, is_index, tk))
+        rows.sort(key=lambda r: abs(fnum(r[2].get("change_percentage")) or 0), reverse=True)
+        for base, is_index, tk in rows[:15]:
+            last = fnum(tk.get("last"))
+            chg = fnum(tk.get("change_percentage"))
+            lines.append("%s %s 现价=%s 24h涨跌=%s" % (
+                base, "指数/ETF" if is_index else "个股", ("%.4g" % last) if last else "-",
+                ("%+.2f%%" % chg) if chg is not None else "-"))
+
     lines.append("-" * 28)
     lines.append("收到此邮件 = 取价 + 发信链路已打通。")
     lines.append("时间：%s" % now_bj.strftime("%Y-%m-%d %H:%M:%S"))
