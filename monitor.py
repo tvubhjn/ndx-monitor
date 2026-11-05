@@ -243,14 +243,14 @@ def fmt_money(v):
 
 
 def build_body(events, session, now_bj):
-    # 按 24h 成交额从高到低排行（交易量越大越靠前）
-    ordered = sorted(events, key=lambda e: e.get("volume") or 0, reverse=True)
+    # 按 24h 涨跌幅绝对值从高到低排行（波动越大越靠前）
+    ordered = sorted(events, key=lambda e: abs(e.get("change_pct") or 0), reverse=True)
     lines = [
         "NDX-100 股票监控告警（Gate 永续）",
         "=" * 28,
         "",
         "时段：%s（北京时间 %s）" % (SESSION_LABEL.get(session, session), now_bj.strftime("%Y-%m-%d %H:%M:%S")),
-        "按 24h 成交额从高到低排序",
+        "按 24h 涨跌幅（绝对值）从高到低排序",
         "",
     ]
     for ev in ordered:
@@ -453,12 +453,16 @@ def run_test():
     lines = ["NDX-100 股票监控测试邮件（Gate 永续）", "=" * 28, "",
              "时段：%s" % SESSION_LABEL[session],
              "监控标的：%d 个（Gate 在交易且属于 NDX100/宽基ETF）" % len(watch),
+             "按 24h 涨跌幅（绝对值）从高到低排序",
              ""]
-    shown = 0
+    rows = []
     for base, is_index in watch:
         tk = tickers.get(base)
-        if not tk:
-            continue
+        if tk:
+            rows.append((base, is_index, tk))
+    rows.sort(key=lambda r: abs(fnum(r[2].get("change_percentage")) or 0), reverse=True)
+    shown = 0
+    for base, is_index, tk in rows:
         last = fnum(tk.get("last"))
         chg = fnum(tk.get("change_percentage"))
         lines.append("%s %s 现价=%s 24h涨跌=%s" % (
