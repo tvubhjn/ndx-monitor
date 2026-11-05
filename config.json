@@ -9,6 +9,15 @@
     "QQQ",
     "SPY"
   ],
+  "stocks": [
+    "AAPL", "ABNB", "ADBE", "ADI", "ADSK", "ALAB", "AMAT", "AMD", "AMGN", "AMZN",
+    "APP", "ARM", "ASML", "AVGO", "BKNG", "CEG", "CMCSA", "COST", "CRWV", "CSCO",
+    "CSX", "DDOG", "FTNT", "GILD", "GOOGL", "INTC", "INTU", "ISRG", "KLAC", "LIN",
+    "LITE", "LRCX", "MAR", "MCHP", "MELI", "META", "MPWR", "MRNA", "MRVL", "MSFT",
+    "MSTR", "MU", "NBIS", "NFLX", "NVDA", "PANW", "PDD", "PEP", "PLTR", "PYPL",
+    "QCOM", "REGN", "RKLB", "SBUX", "SHOP", "SNDK", "SNPS", "SPCX", "TER", "TMUS",
+    "TSLA", "TTWO", "TXN", "VRTX", "WDC", "WMT"
+  ],
   "email": {
     "to": ["2494994336@qq.com"]
   },
