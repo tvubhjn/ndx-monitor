@@ -190,6 +190,7 @@ def evaluate(base, tk, is_index, thr):
     chg = fnum(tk.get("change_percentage"))
     high = fnum(tk.get("high_24h"))
     low = fnum(tk.get("low_24h"))
+    volume = fnum(tk.get("volume_24h_quote"))
 
     if last is None or last <= 0 or chg is None:
         return None
@@ -220,6 +221,7 @@ def evaluate(base, tk, is_index, thr):
         "price": last,
         "change_pct": chg,
         "amplitude_pct": amplitude,
+        "volume": volume,
         "is_index": is_index,
         "amp_hit": amp_hit,
         "direction": direction,
@@ -230,15 +232,28 @@ def evaluate(base, tk, is_index, thr):
 # 邮件
 # --------------------------------------------------------------------------
 
+def fmt_money(v):
+    if v is None:
+        return "-"
+    if v >= 1e8:
+        return "%.2f 亿 USDT" % (v / 1e8)
+    if v >= 1e4:
+        return "%.0f 万 USDT" % (v / 1e4)
+    return "%.0f USDT" % v
+
+
 def build_body(events, session, now_bj):
+    # 按 24h 成交额从高到低排行（交易量越大越靠前）
+    ordered = sorted(events, key=lambda e: e.get("volume") or 0, reverse=True)
     lines = [
         "NDX-100 股票监控告警（Gate 永续）",
         "=" * 28,
         "",
         "时段：%s（北京时间 %s）" % (SESSION_LABEL.get(session, session), now_bj.strftime("%Y-%m-%d %H:%M:%S")),
+        "按 24h 成交额从高到低排序",
         "",
     ]
-    for ev in events:
+    for ev in ordered:
         if ev.get("direction") == "up":
             arrow = "↑ 上涨"
         elif ev.get("direction") == "down":
@@ -251,6 +266,7 @@ def build_body(events, session, now_bj):
         lines.append("  24h涨跌幅：%+.2f%%" % ev["change_pct"])
         if ev["amplitude_pct"] is not None:
             lines.append("  24h振幅：%.2f%%" % ev["amplitude_pct"])
+        lines.append("  24h成交额：%s" % fmt_money(ev.get("volume")))
         lines.append("-" * 28)
     lines.append("")
     lines.append("数据源：Gate.io 股票/ETF 永续（24/7）。本邮件由 GitHub Actions 自动发送，请勿直接回复。")
