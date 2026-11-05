@@ -232,43 +232,34 @@ def evaluate(base, tk, is_index, thr):
 # 邮件
 # --------------------------------------------------------------------------
 
-def fmt_money(v):
-    if v is None:
-        return "-"
-    if v >= 1e8:
-        return "%.2f 亿 USDT" % (v / 1e8)
-    if v >= 1e4:
-        return "%.0f 万 USDT" % (v / 1e4)
-    return "%.0f USDT" % v
-
-
 def build_body(events, session, now_bj):
-    # 按 24h 涨跌幅绝对值从高到低排行（波动越大越靠前）
-    ordered = sorted(events, key=lambda e: abs(e.get("change_pct") or 0), reverse=True)
+    # 涨的在前（涨幅从大到小），跌的在后（跌幅从大到小）
+    ups = sorted([e for e in events if e.get("direction") == "up"],
+                 key=lambda e: -(e.get("change_pct") or 0))
+    downs = sorted([e for e in events if e.get("direction") == "down"],
+                   key=lambda e: e.get("change_pct") or 0)
+    others = [e for e in events if e.get("direction") not in ("up", "down")]
+
     lines = [
         "NDX-100 股票监控告警（Gate 永续）",
         "=" * 28,
         "",
         "时段：%s（北京时间 %s）" % (SESSION_LABEL.get(session, session), now_bj.strftime("%Y-%m-%d %H:%M:%S")),
-        "按 24h 涨跌幅（绝对值）从高到低排序",
         "",
     ]
-    for ev in ordered:
-        if ev.get("direction") == "up":
-            arrow = "↑ 上涨"
-        elif ev.get("direction") == "down":
-            arrow = "↓ 下跌"
-        else:
-            arrow = "↕ 大幅震荡"
-        tag = "指数/ETF" if ev["is_index"] else "个股"
-        lines.append("%s %s %s" % (ev["symbol"], arrow, tag))
-        lines.append("  现价：%.4g" % ev["price"])
-        lines.append("  24h涨跌幅：%+.2f%%" % ev["change_pct"])
-        if ev["amplitude_pct"] is not None:
-            lines.append("  24h振幅：%.2f%%" % ev["amplitude_pct"])
-        lines.append("  24h成交额：%s" % fmt_money(ev.get("volume")))
-        lines.append("-" * 28)
-    lines.append("")
+
+    def block(title, arr):
+        if not arr:
+            return
+        lines.append("%s（%d 个）" % (title, len(arr)))
+        for e in arr:
+            lines.append("  %-6s %+.2f%%" % (e["symbol"], e["change_pct"]))
+        lines.append("")
+
+    block("上涨", ups)
+    block("下跌", downs)
+    block("大幅震荡（仅振幅触发）", others)
+
     lines.append("数据源：Gate.io 股票/ETF 永续（24/7）。本邮件由 GitHub Actions 自动发送，请勿直接回复。")
     return "\n".join(lines)
 
@@ -466,16 +457,25 @@ def run_test():
              ""]
 
     if hits:
-        hits.sort(key=lambda e: abs(e.get("change_pct") or 0), reverse=True)
-        lines.append("以下 %d 个标的当前涨跌超阈值（按涨跌幅绝对值从高到低）：" % len(hits))
+        ups = sorted([e for e in hits if e.get("direction") == "up"],
+                     key=lambda e: -(e.get("change_pct") or 0))
+        downs = sorted([e for e in hits if e.get("direction") == "down"],
+                       key=lambda e: e.get("change_pct") or 0)
+        others = [e for e in hits if e.get("direction") not in ("up", "down")]
+        lines.append("以下 %d 个标的当前涨跌超阈值：" % len(hits))
         lines.append("")
-        for ev in hits:
-            d = ev.get("direction")
-            arrow = "↑" if d == "up" else ("↓" if d == "down" else "↕")
-            tag = "指数/ETF" if ev["is_index"] else "个股"
-            lines.append("%s %s %s 现价=%.4g 24h涨跌=%+.2f%% 振幅=%s" % (
-                ev["symbol"], arrow, tag, ev["price"], ev["change_pct"],
-                ("%.2f%%" % ev["amplitude_pct"]) if ev["amplitude_pct"] is not None else "-"))
+
+        def block(title, arr):
+            if not arr:
+                return
+            lines.append("%s（%d 个）" % (title, len(arr)))
+            for e in arr:
+                lines.append("  %-6s %+.2f%%" % (e["symbol"], e["change_pct"]))
+            lines.append("")
+
+        block("上涨", ups)
+        block("下跌", downs)
+        block("大幅震荡", others)
     else:
         lines.append("当前无标的涨跌超阈值。以下为波动最大的前 15 个样本：")
         lines.append("")
